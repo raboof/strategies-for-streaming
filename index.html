@@ -1,0 +1,336 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+<title>Strategies for Streaming</title>
+
+<link rel="stylesheet" href="css/reveal.css">
+<link rel="stylesheet" href="css/extra.css">
+<link rel="stylesheet" href="css/theme/akka.css">
+
+<!-- Theme used for syntax highlighting of code -->
+<link rel="stylesheet" href="lib/css/zenburn.css">
+
+<!-- Printing and PDF exports -->
+<script>
+var link = document.createElement( 'link' );
+link.rel = 'stylesheet';
+link.type = 'text/css';
+link.href = window.location.search.match( /print-pdf/gi ) ? 'css/print/pdf.css' : 'css/print/paper.css';
+document.getElementsByTagName( 'head' )[0].appendChild( link );
+</script>
+</head>
+<body>
+
+
+<div class="reveal">
+<div class="slides">
+<section class="unnudge" data-background="#15a9ce" class="unnudge">
+<h3><a href="#strategies-for-streaming" name="strategies-for-streaming" class="anchor"><span class="anchor-link"></span></a>Strategies for Streaming</h3>
+<h5><a href="#arnout-engelen" name="arnout-engelen" class="anchor"><span class="anchor-link"></span></a>Arnout Engelen</h5>
+<h5><a href="#curry-on-2018-amsterdam" name="curry-on-2018-amsterdam" class="anchor"><span class="anchor-link"></span></a>Curry On 2018, Amsterdam</h5></section><section><section>
+<p>Open Source toolkit for building Concurrent, Distributed, Resilient, Message-Driven applications on the Java Virtual Machine (JVM)</p>
+<p><img src="images/akka_full_color.svg" alt="Akka logo" /></p>
+<p><aside class="notes">Before we dive in let me tell you what sparked me to tell this story: this was triggered by my work on the Akka team at Lightbend. might be interesting to do a quick show of hands who is more or less familiar with Akka?</aside></p></section><section>
+<p>Main building blocks:</p>
+<ul>
+  <li>Actors (akka-actor)</li>
+  <li>Streams (akka-streams)</li>
+</ul><div class="fragment">
+<p>On top of those:</p>
+<ul>
+  <li>Akka HTTP</li>
+  <li>Akka Cluster</li>
+  <li>Akka Persistence</li>
+  <li>&hellip;</li>
+</ul></div><aside class="notes">
+<p>Akka is a library available for Java and Scala that introduces 2 main abstractions: the first is the actor model, which provides a concurrency model based on message passing between entities we call Actors, and Akka Streams, which introduces an abstraction to talk about streaming data.</p>
+<p>Akka Streams is implemented on top of Actors.</p>
+<p>On top of those basic building blocks, the Akka toolkit provides all kinds of practical building blocks to make writing actual applications on top of these abstractions really nice.</p></aside></section><section>
+<h2><a href="#why-a-streams-library-" name="why-a-streams-library-" class="anchor"><span class="anchor-link"></span></a>Why a streams library?</h2>
+<p><aside class="notes">The question that popped into my head is: why do we need Akka Streams at all? Akka is written in Scala, which is a nice expressive language, shouldn&rsquo;t we just express streams from basic language building blocks?</aside></p></section></section><section>
+<ol>
+  <li>Streaming systems</li>
+  <li>Strategies</li>
+  <li>Reactive Streams</li>
+  <li>Akka Streams</li>
+  <li>Demo</li>
+  <li>Beyond</li>
+</ol>
+<p><aside class="notes">as a quick agenda for the rest of this talk</aside></p></section><section>
+<h2><a href="#1-streaming-systems" name="1-streaming-systems" class="anchor"><span class="anchor-link"></span></a>1. Streaming systems</h2>
+<p><span class="fragment">Element by element</span></p>
+<p><span class="fragment">&lsquo;Fast Data&rsquo;</span></p>
+<p><span class="fragment">Within a program</span></p>
+<p><span class="fragment">Java Virtual Machine (JVM)</span></p>
+<p><span class="fragment">Non-trivial, Ordered</span></p>
+<p><aside class="notes">So what are &lsquo;streaming systems&rsquo; for today? I think the defining characteristic is that these are systems that try to process data as soon as it arrives, where elements can be as low-level as bytes or byte buffers, or more high-level messages or entities. These will typically be networked applications, but today I&rsquo;ll focus on stream processing within a single program. Building larger systems out of such programs, or distributing streams over clusters like with Spark, is outside of the scope of today. While many of the concepts introduced are of course general, I will focus on the constraints of the JVM, and finally we&rsquo;ll start small, but try to look at what happens when we&rsquo;re really manipulating the data in the stream: interpreting, splitting, merging, etc.</aside></p></section><section><section>
+<h2><a href="#2-strategies" name="2-strategies" class="anchor"><span class="anchor-link"></span></a>2. Strategies</h2>
+<p>Naive copying:</p>
+<pre><code>while (buf = upstream.read()) {
+  downstream.write(buf)
+}
+</code></pre><div class="fragment">
+<p>On the JVM, threads are expensive:</p>
+<ul>
+  <li>OS-level thread, stack, scheduling</li>
+  <li>JVM-level stack, GC root</li>
+</ul></div>
+<p><aside class="notes">simplistic, blocking. fine for 1 stream. Many streams? threads expensive! context switching</aside></p></section><section>
+<h3><a href="#desirable-properties" name="desirable-properties" class="anchor"><span class="anchor-link"></span></a>Desirable properties</h3>
+<ol>
+  <li>Non-blocking (to reduce threads)</li>
+</ol>
+<p><aside class="notes">discovered</aside></p></section><section>
+<p>Non-blocking upstream:</p>
+<pre><code>upstream.setBlocking(false);
+
+while (buf = upstream.read()) {
+  downstream.write(buf)
+}
+</code></pre>
+<p><aside class="notes">Non-blocking at the flick of a switch: &lsquo;as much as possible&rsquo;.</aside></p></section><section>
+<p>Non-blocking downstream:</p>
+<pre><code>downstream.setBlocking(false);
+
+if (downstream.ready()) {
+  while (buf = upstream.read()) {
+    downstream.write(buf)
+  }
+}
+</code></pre></section><section>
+<p>Non-blocking both?</p>
+<pre><code>upstream.setBlocking(false);
+downstream.setBlocking(false);
+
+while (buf = upstream.read()) {
+  downstream.write(buf) // ???
+}
+</code></pre>
+<p><aside class="notes">decouple</aside></p></section><section>
+<p>3 flavours of non-blocking API:</p>
+<ul>
+  <li>Return ASAP</li>
+  <li>Asynchronous: Callbacks</li>
+  <li>Asynchronous: Events</li>
+</ul>
+<p><aside class="notes">programming models called async. previously: actors message passing, no surprise</aside></p></section><section>
+<h3><a href="#desirable-properties" name="desirable-properties" class="anchor"><span class="anchor-link"></span></a>Desirable properties</h3>
+<ol>
+  <li>Non-blocking (to reduce threads)</li>
+  <li>Asynchronous (decouples reading/writing)</li>
+</ol></section><section>
+<p><img src="images/actorsystem.svg" alt="Actor system diagram" /></p></section><section>
+<p><img src="images/dispatchers.svg" alt="Actor dispatching diagram" /></p>
+<p><aside class="notes">threads=cpus, single thread illusion</aside></p></section><section>
+<p>Message passing:</p>
+<pre><code>{
+  case buf =&gt; downstream ! buf
+}
+</code></pre></section><section data-background-video="images/fishermen.mp4">
+<h1><a href="#" name="" class="anchor"><span class="anchor-link"></span></a><span class="orange fragment">OutOfMemoryError</span></h1></section><section>
+<h3><a href="#desirable-properties" name="desirable-properties" class="anchor"><span class="anchor-link"></span></a>Desirable properties</h3>
+<ol>
+  <li>Non-blocking (to reduce threads)</li>
+  <li>Asynchronous (decouples reading/writing)</li>
+  <li>Back pressured (avoid overflowing memory)</li>
+</ol></section><section>
+<p>Back pressure is automatic with blocking I/O:</p>
+<pre><code>while (buf = upstream.read()) {
+  downstream.write(buf)
+}
+</code></pre><div class="fragment">
+<p>Async, information must travel in both directions:</p>
+<pre><code>{
+  case buf             =&gt; downstream ! buf
+  case ReadyForOneMore =&gt; upstream ! ReadyForOneMore
+}
+</code></pre>
+<p><aside class="notes">pingpong -&gt; slow</aside></p></div></section><section>
+<p>Parallelism:</p>
+<pre><code>{
+  case buf             =&gt; downstream ! buf
+  case ReadyForMore(n) =&gt; upstream ! ReadyForMore(n)
+}
+</code></pre>
+<p><aside class="notes">stream processing with stages: start processing next element when previous element is not yet finished. flow parts flexibly reusable here?</aside></p></section><section>
+<p><img src="images/compose_graph.png" alt="more complicated graphs" /></p></section><section>
+<h3><a href="#desirable-properties" name="desirable-properties" class="anchor"><span class="anchor-link"></span></a>Desirable properties</h3>
+<ol>
+  <li>Non-blocking (to reduce threads)</li>
+  <li>Asynchronous (decouples reading/writing)</li>
+  <li>Back pressured (avoid overflowing memory)</li>
+</ol></section></section><section><section>
+<h2><a href="#3-reactive-streams" name="3-reactive-streams" class="anchor"><span class="anchor-link"></span></a>3. Reactive Streams</h2></section><section data-background="#489ebd">
+<h3><a href="#reactive-streams-timeline" name="reactive-streams-timeline" class="anchor"><span class="anchor-link"></span></a>Reactive Streams Timeline</h3>
+<p><img src="images/reactive_streams_timeline.png" alt="Reactive Streams Timeline" /></p>
+<p><aside class="notes">Solving same problem. Industry together &lsquo;Reactive Streams working group&rsquo; by Viktor Klang of the Akka Team (not limited to JVM). Consistent, interoperable. Next: goal</aside></p></section><section data-background="#489ebd">
+<h3><a href="#reactive-streams" name="reactive-streams" class="anchor"><span class="anchor-link"></span></a>Reactive Streams</h3>
+<p>is an initiative to provide a standard<br> for <u>asynchronous</u> stream processing<br> with <u>non-blocking</u> <u>back pressure</u>.</p>
+<p><a href="http://www.reactive-streams.org">http://www.reactive-streams.org</a></p></section><section>
+<h3><a href="#java-util-concurrent-flow" name="java-util-concurrent-flow" class="anchor"><span class="anchor-link"></span></a><code>java.util.concurrent.Flow</code></h3>
+<pre class="prettyprint"><code class="language-java">public interface Publisher&lt;T&gt; {
+  public void subscribe(Subscriber&lt;? super T&gt; s);
+}</code></pre>
+<pre class="prettyprint"><code class="language-java">public interface Subscriber&lt;T&gt; {
+  public void onSubscribe(Subscription s);
+  public void onNext(T t);
+  public void onError(Throwable t);
+  public void onComplete();
+}</code></pre>
+<pre class="prettyprint"><code class="language-java">public interface Subscription {
+  public void request(long n);
+  public void cancel();
+}</code></pre>
+<pre class="prettyprint"><code class="language-java">public interface Processor&lt;T, R&gt; extends Subscriber&lt;T&gt;, Publisher&lt;R&gt; {
+}</code></pre>
+<p><aside class="notes">Most significant milestone was the inclusion of the RS interfaces in JDK9 If you&rsquo;re not on JDK9 you can use the org.reactivestreams library.</aside></p></section><section>
+<h3><a href="#specifications" name="specifications" class="anchor"><span class="anchor-link"></span></a>Specifications</h3>
+<ul>
+  <li>11-17 requirements (some subtle). Each.</li>
+  <li>Technology Compatibility Kit (TCK)</li>
+</ul>
+<p><aside class="notes">simplicity is deceptive: TCK for conformance checking. Originally planned: both user-facing API and an interoperability API. User-facing scrapped ~2014 so libraries can provide their own, ideomatic impl.</aside></p></section></section><section><section>
+<h2><a href="#4-akka-streams" name="4-akka-streams" class="anchor"><span class="anchor-link"></span></a>4. Akka Streams</h2></section><section>
+<p><img src="images/stream-blocks.svg" alt="Source, Flow and Sink" /></p></section><section>
+<pre class="prettyprint"><code class="language-java">Source.range(0, 20000000);</code></pre>
+<pre class="prettyprint fragment"><code class="language-java">Flow.fromFunction(n -&gt; n.toString());</code></pre>
+<pre class="prettyprint fragment"><code class="language-java">Sink.foreach(str -&gt; System.out.println(str));</code></pre>
+<p><aside class="notes">Before we dive into the specifics, let&rsquo;s start with some small examples to get a feel</aside></p></section><section>
+<pre class="prettyprint"><code class="language-java">Source&lt;Integer, NotUsed&gt; source =
+  Source.range(0, 20000000);</code></pre>
+<pre class="prettyprint"><code class="language-java">Flow&lt;Integer, String, NotUsed&gt; flow =
+  Flow.fromFunction(n -&gt; n.toString());</code></pre>
+<pre class="prettyprint"><code class="language-java">Sink&lt;String, CompletionStage&lt;Done&gt;&gt; sink =
+  Sink.foreach(str -&gt; System.out.println(str));</code></pre>
+<pre class="prettyprint fragment"><code class="language-java">RunnableGraph&lt;NotUsed&gt; runnable =
+  source.via(flow).to(sink);</code></pre>
+<pre class="prettyprint fragment"><code class="language-java">ActorSystem system = ActorSystem.create();
+Materializer materializer = ActorMaterializer.create(system);
+
+runnable.run(materializer);</code></pre></section><section>
+<pre class="prettyprint"><code class="language-scala">val source = Source(0 to 20000000)</code></pre>
+<pre class="prettyprint"><code class="language-scala">val flow = Flow[Int].map(_.toString())</code></pre>
+<pre class="prettyprint"><code class="language-scala">val sink = Sink.foreach[String](println(_))</code></pre>
+<pre class="prettyprint fragment"><code class="language-scala">val runnable = source.via(flow).to(sink)</code></pre>
+<pre class="prettyprint fragment"><code class="language-scala">implicit val system = ActorSystem()
+implicit val mat = ActorMaterializer()
+
+runnable.run()</code></pre></section><section>
+<p>Java:</p>
+<pre class="prettyprint"><code class="language-java">Source.range(0, 20000000)
+  .map(Object::toString)
+  .runForeach(str -&gt; System.out.println(str), materializer);</code></pre>
+<p>Scala:</p>
+<pre class="prettyprint"><code class="language-scala">Source(0 to 20000000)
+  .map(_.toString)
+  .runForeach(println)</code></pre>
+<p><aside class="notes">we really try to make the API really easy to use for Java and Scala. LOOK AT TIME - can break here to skip materialization</aside></p></section><section>
+<h2><a href="#materialization" name="materialization" class="anchor"><span class="anchor-link"></span></a>Materialization</h2>
+<pre class="prettyprint group-scala"><code class="language-scala">val graph = Source(0 to 20000000)
+  .map(_.toString)
+  .to(Sink.foreach(println))
+
+implicit val system = ActorSystem()
+implicit val materializer = ActorMaterializer()
+
+val n1: NotUsed = graph.run()
+val n2: NotUsed = graph.run()</code></pre>
+<p><aside class="notes">running = 2-stage: build graph, run graph. run = materialization. Same graph can be materialized multiple times.</aside></p></section><section>
+<h2><a href="#materialized-values" name="materialized-values" class="anchor"><span class="anchor-link"></span></a>Materialized values</h2>
+<pre class="prettyprint group-scala"><code class="language-scala">val source: Source[String, ActorRef]  =
+  Source.actorRef(bufferSize = 23, OverflowStrategy.dropNew)
+
+val sink: Sink[String, Future[String]] =
+  Sink.reduce(_ + _)
+
+val actor: ActorRef = source.to(sink).run()
+actor ! &quot;Message&quot;</code></pre>
+<p></p></section><section>
+<h2><a href="#materialized-values" name="materialized-values" class="anchor"><span class="anchor-link"></span></a>Materialized values</h2>
+<pre class="prettyprint group-scala"><code class="language-scala">val source: Source[String, ActorRef] =
+ Source.actorRef(bufferSize = 23, OverflowStrategy.dropNew)
+
+val sink: Sink[String, Future[String]] =
+ Sink.reduce(_ + _)
+
+val graph1: RunnableGraph[ActorRef] =
+ source.to(sink)
+
+val graph2: RunnableGraph[Future[String]] =
+ source.toMat(sink)(Keep.right)
+
+val graph3: RunnableGraph[(ActorRef, Future[String])] =
+ source.toMat(sink)(Keep.both)</code></pre>
+<p></p></section><section>
+<p><img src="images/compose_mat.png" alt="materialized values" /></p></section><section>
+<h2><a href="#actor-materialization" name="actor-materialization" class="anchor"><span class="anchor-link"></span></a>Actor materialization</h2>
+<pre class="prettyprint group-scala"><code class="language-scala"> Source(1 to 3)
+   .map(x =&gt; x + 1)
+   .map(x =&gt; x * 2)
+   .to(Sink.reduce[Int](_ + _))</code></pre>
+<p><img src="images/stream-unfused.svg" alt="Source, Flow and Sink" /></p>
+<p><aside class="notes">Advantage of 2-phase: reusable building blocks, but opportunity for optimizations at materialization time</aside></p></section><section>
+<h1><a href="#fusing" name="fusing" class="anchor"><span class="anchor-link"></span></a>Fusing</h1>
+<pre class="prettyprint group-scala"><code class="language-scala"> Source(1 to 3)
+   .map(x =&gt; x + 1).async
+   .map(x =&gt; x * 2)
+   .to(Sink.reduce[Int](_ + _))</code></pre>
+<p><img src="images/stream-async.svg" alt="Source, Flow and Sink" /></p></section><section>
+<h1><a href="#fusing" name="fusing" class="anchor"><span class="anchor-link"></span></a>Fusing</h1>
+<pre class="prettyprint group-scala"><code class="language-scala"> Source(1 to 3)
+   .map(x =&gt; x + 1)
+   .mapAsync(5)(n =&gt; Future.successful(n * 2))
+   .to(Sink.reduce[Int](_ + _))</code></pre>
+<p><img src="images/stream-async.svg" alt="Source, Flow and Sink" /></p></section></section><section><section>
+<h2><a href="#5-demo" name="5-demo" class="anchor"><span class="anchor-link"></span></a>5. Demo</h2></section><section>
+<h2><a href="#tcp-number-server" name="tcp-number-server" class="anchor"><span class="anchor-link"></span></a>TCP Number Server</h2>
+<!--
+
+@@snip[x]($root$/src/main/scala/streams/TcpServer.scala) {#bind}
+@@snip[x]($root$/src/main/scala/streams/TcpServer.scala) {#run .fragment}
+@@snip[x]($root$/src/main/scala/streams/TcpServer.scala) {#flow .fragment}
+--></section><section data-background="images/alpakka.jpg">
+<h1><a href="#" name="" class="anchor"><span class="anchor-link"></span></a><span class="orange">Alpakka</span></h1></section><section>
+<h2><a href="#alpakka" name="alpakka" class="anchor"><span class="anchor-link"></span></a>Alpakka</h2>
+<p>Community for Akka Streams connectors</p>
+<p><span class="fragment"><a href="https://github.com/akka/alpakka">https://github.com/akka/alpakka</a></span></p>
+<p><aside class="notes">A bit like Apache Camel, but for Akka Streams</aside></p></section><section>
+<p><img src="images/alpakka/collection.svg" alt="alpakka logo collection" /></p></section></section><section><section>
+<h2><a href="#6-beyond" name="6-beyond" class="anchor"><span class="anchor-link"></span></a>6. Beyond</h2>
+<ul>
+  <li>Other approaches, e.g. fs2, Monix, &hellip;</li>
+  <li>Future JVM: Fibers/Project Loom</li>
+  <li>Other ecosystems</li>
+</ul></section></section><section><section>
+<h1><a href="#questions-" name="questions-" class="anchor"><span class="anchor-link"></span></a>Questions?</h1></section><section>
+<img src="images/scala-center-black.png" alt="Scala Center" width= "40%">
+<p>&lsquo;Scala Spree&rsquo; at ING tomorrow!</p><div class="fragment">
+<h1><a href="#thank-you-" name="thank-you-" class="anchor"><span class="anchor-link"></span></a>Thank you!</h1>
+<p><a href="https://akka.io">https://akka.io</a> <a href="https://twitter.com/akkateam">@akkateam</a> <a href="https://twitter.com/raboofje">@raboofje</a></p></div></section></section>
+</div>
+</div>
+
+<script src="lib/js/head.min.js"></script>
+<script src="js/reveal.js"></script>
+
+<script>
+// More info about config & dependencies:
+// - https://github.com/hakimel/reveal.js#configuration
+// - https://github.com/hakimel/reveal.js#dependencies
+Reveal.initialize({
+history: true,
+slideNumber: true,
+dependencies: [
+{ src: 'plugin/markdown/marked.js' },
+{ src: 'plugin/markdown/markdown.js' },
+{ src: 'plugin/notes/notes.js', async: true },
+{ src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } }
+]
+});
+</script>
+<div class="footer" style="position: absolute; width: 100%; bottom: 0px; padding: 1.2em; background-image: url(lightbend-reverse.svg); height: 3em; background-color: #15a9ce; background-repeat: no-repeat; background-origin: content-box"></div>
+</body>
+</html>
