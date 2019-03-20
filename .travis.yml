@@ -1,6 +1,4 @@
-langage: scala
-
-dist: xenial
+language: scala
 
 script: sbt test paradox
 
