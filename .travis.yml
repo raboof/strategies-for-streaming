@@ -1,5 +1,7 @@
 langage: scala
 
+dist: xenial
+
 script: sbt test paradox
 
 deploy:
